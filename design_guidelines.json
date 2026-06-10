@@ -1,0 +1,93 @@
+{
+  "theme": "Light",
+  "archetype": "Archetype 1 (Organic & Earthy)",
+  "vibe": "A grounded, trustworthy, tactile personal finance dashboard. Rejects the generic 'neon fintech' or 'SaaS blue' templates. Uses an earthy palette with sharp, flat, 'control room' grids to balance personality with high data density.",
+  "typography": {
+    "fonts": {
+      "headings": "Chivo",
+      "body": "Manrope",
+      "data_and_numbers": "IBM Plex Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-black tracking-tighter leading-none text-[#1C1C1A]",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight text-[#1C1C1A]",
+      "h3": "text-xl font-semibold tracking-tight text-[#1C1C1A]",
+      "h4": "text-lg font-medium tracking-tight text-[#1C1C1A]",
+      "body": "text-base font-normal leading-relaxed text-[#1C1C1A]",
+      "small_labels": "text-xs font-bold uppercase tracking-[0.2em] text-[#6E6D68]",
+      "numbers_large": "font-mono text-4xl sm:text-5xl font-medium tracking-tight text-[#1C1C1A]",
+      "numbers_table": "font-mono text-sm tracking-tight text-[#1C1C1A]"
+    },
+    "instructions": "Do not use Inter, Roboto, or open sans. Install via fontsource or google fonts. Apply IBM Plex Mono strictly to balances, transaction amounts, dates, and unit prices. Headings must use Chivo with tight tracking."
+  },
+  "colors": {
+    "background": "#F4F3EF",
+    "surface": "#FFFFFF",
+    "text_primary": "#1C1C1A",
+    "text_secondary": "#6E6D68",
+    "border": "#E6E5E0",
+    "primary": "#2C3E2D",
+    "primary_foreground": "#F4F3EF",
+    "primary_hover": "#1E2A1F",
+    "income": "#2D5A27",
+    "income_bg": "#E5EFE3",
+    "expense": "#9B3922",
+    "expense_bg": "#FCEAE8",
+    "recurrent_badge": "#C28A2B",
+    "recurrent_bg": "#F9F0E1"
+  },
+  "layout": {
+    "spacing_scale": "Use generous padding: p-6 or p-8 for dashboard cards. Do not cram content.",
+    "grid_system": {
+      "dashboard_base": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-12 gap-6",
+      "hero_balance": "col-span-1 md:col-span-4 lg:col-span-8 h-full",
+      "quick_actions_or_summary": "col-span-1 md:col-span-4 lg:col-span-4 h-full",
+      "chart_wide": "col-span-1 md:col-span-4 lg:col-span-8",
+      "list_narrow": "col-span-1 md:col-span-4 lg:col-span-4"
+    },
+    "surface_strategy": "Control Room style: Dashboard cards must have flat solid backgrounds (#FFFFFF), a 1px crisp border (border-[#E6E5E0]), and NO box-shadow. Use rounded-sm (max 4px radius) or rounded-none for a sharp, architectural feel."
+  },
+  "components": {
+    "buttons": "Flat design. Primary button: bg-[#2C3E2D] text-[#F4F3EF] rounded-none px-6 py-3 font-medium hover:bg-[#1E2A1F] transition-colors. Secondary: border border-[#E6E5E0] bg-transparent text-[#1C1C1A] hover:bg-[#E6E5E0]/50.",
+    "tables": "border-collapse. Header row must use 'small_labels' typography (uppercase, wide tracking). Cells must have border-b border-[#E6E5E0]. Amount column MUST use right-alignment and IBM Plex Mono.",
+    "forms": "Inputs must be flat, rounded-none or rounded-sm, bg-[#F4F3EF] or white with border-[#E6E5E0]. Focus state: ring-1 ring-[#2C3E2D] border-[#2C3E2D]. Use Shadcn but override radii and focus colors.",
+    "badges": "Flat colors. Income: bg-[#E5EFE3] text-[#2D5A27]. Expense: bg-[#FCEAE8] text-[#9B3922]. Flat rounded-sm, text-xs font-bold uppercase tracking-wider.",
+    "charts": "Recharts ONLY. Line charts: remove gradient fills below lines. Use solid stroke (#2D5A27 for income, #9B3922 for expense) with strokeWidth={2}. Remove generic cartesian grid, or use stroke='#E6E5E0' strokeDasharray='3 3'. Tooltip: bg-[#1C1C1A] text-white rounded-none border-none p-3 font-mono text-sm.",
+    "navigation": "Left sidebar or top sticky nav with solid bg-[#F4F3EF] and border-r or border-b border-[#E6E5E0]. Active links: font-bold text-[#1C1C1A], inactive: text-[#6E6D68]."
+  },
+  "motion": {
+    "hover_states": "Crisp and subtle. Buttons translate-y-[1px] on active. Backgrounds shift to slightly darker hex instantly. No bouncy or slow easing.",
+    "transitions": "Use transition-all duration-200 ease-in-out."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "Use strokeWidth={1.5}. Keep icon sizes proportional to text (e.g., w-4 h-4 for inline text, w-6 h-6 for nav items)."
+  },
+  "media": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1504548840739-580b10ae7715?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwb3JnYW5pYyUyMHRleHR1cmV8ZW58MHx8fHwxNzgxMTM0MTIwfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Minimalist organic sand dune texture.",
+      "usage": "Use as a full-bleed left or right panel background image on the login/signup page. Must have an overlay of bg-[#F4F3EF]/20 to blend seamlessly."
+    },
+    "user_avatar": {
+      "url": "https://images.pexels.com/photos/15875169/pexels-photo-15875169.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Artistic black and white side profile portrait.",
+      "usage": "Use as the placeholder avatar for the authenticated user in the header/sidebar."
+    }
+  },
+  "accessibility": {
+    "contrast": "Ensure #6E6D68 on #F4F3EF meets 4.5:1 ratio. If not, darken text_secondary.",
+    "testing": "All interactive and key informational elements MUST include a 'data-testid' attribute (e.g., data-testid='login-submit-button', data-testid='transaction-amount')."
+  },
+  "instructions_to_main_agent": [
+    "Install Google Fonts 'Chivo', 'Manrope', and 'IBM Plex Mono'.",
+    "Configure Tailwind with the exact color hex codes provided in 'colors'.",
+    "Implement Shadcn UI but heavily customize the 'Card' and 'Button' and 'Input' components to remove default shadows and border-radii as per 'surface_strategy'.",
+    "For Recharts, ensure you use the custom hex codes provided for charts, and apply the font-mono class to chart axes and tooltips.",
+    "Apply 'data-testid' to ALL buttons, inputs, chart containers, and table rows.",
+    "Ensure the login page displays the Google OAuth button clearly, and has a dedicated section for TOTP MFA QR enrollment.",
+    "For the Transaction table, align amounts to the right and use the 'numbers_table' font style.",
+    "Never use generic placeholder images; use the media URLs provided in this JSON.",
+    "Implement RBAC settings UI restricted to Owner, matching the earthy flat design system."
+  ]
+}
