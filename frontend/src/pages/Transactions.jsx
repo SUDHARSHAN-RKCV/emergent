@@ -3,7 +3,8 @@ import api, { formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import PageHeader from "@/components/PageHeader";
 import { toast } from "sonner";
-import { Trash2, Pencil } from "lucide-react";
+import { Trash2, Pencil, Upload, Search, ArrowLeftRight } from "lucide-react";
+import CSVImportModal from "@/components/CSVImportModal";
 
 export default function Transactions() {
   const { user } = useAuth();
@@ -14,8 +15,10 @@ export default function Transactions() {
   const [filterAccount, setFilterAccount] = useState("");
   const [filterCategory, setFilterCategory] = useState("");
   const [filterRecurrent, setFilterRecurrent] = useState("");
+  const [searchQ, setSearchQ] = useState("");
   const [editing, setEditing] = useState(null);
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const canEdit = user?.role === "owner" || user?.role === "editor";
   const currency = user?.preferred_currency || "INR";
 
@@ -25,6 +28,7 @@ export default function Transactions() {
     if (filterAccount) params.append("account_id", filterAccount);
     if (filterCategory) params.append("category_id", filterCategory);
     if (filterRecurrent) params.append("is_recurrent", filterRecurrent);
+    if (searchQ.trim()) params.append("q", searchQ.trim());
     const [t, a, c] = await Promise.all([
       api.get(`/transactions?${params.toString()}`),
       api.get("/accounts"),
@@ -35,7 +39,7 @@ export default function Transactions() {
     setCategories(c.data);
   };
 
-  useEffect(() => { load(); }, [filterType, filterAccount, filterCategory, filterRecurrent]);
+  useEffect(() => { load(); }, [filterType, filterAccount, filterCategory, filterRecurrent, searchQ]);
 
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this transaction?")) return;
@@ -49,16 +53,33 @@ export default function Transactions() {
       <PageHeader
         subtitle="All movements"
         title="Transactions"
-        action={canEdit && <button data-testid="add-txn-btn" onClick={() => { setEditing(null); setOpen(true); }} className="btn-primary">+ New transaction</button>}
+        action={canEdit && (
+          <div className="flex gap-2">
+            <button data-testid="import-csv-btn" onClick={() => setImportOpen(true)} className="btn-secondary flex items-center gap-2">
+              <Upload className="w-4 h-4" strokeWidth={1.5} /> Import CSV
+            </button>
+            <button data-testid="add-txn-btn" onClick={() => { setEditing(null); setOpen(true); }} className="btn-primary">+ New transaction</button>
+          </div>
+        )}
       />
 
       {/* Filters */}
       <div className="card-flat p-4 mb-6 flex flex-wrap gap-3 items-center" data-testid="txn-filters">
-        <span className="label-caps">Filter:</span>
+        <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+          <Search className="w-4 h-4 text-[var(--text-secondary)]" strokeWidth={1.5} />
+          <input
+            data-testid="txn-search"
+            value={searchQ}
+            onChange={(e) => setSearchQ(e.target.value)}
+            placeholder="Search name or notes…"
+            className="input-flat py-2 text-sm border-0 focus:shadow-none flex-1"
+          />
+        </div>
         <select data-testid="filter-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className="input-flat w-auto py-2 text-sm">
           <option value="">All types</option>
           <option value="income">Income</option>
           <option value="expense">Expense</option>
+          <option value="transfer">Transfer</option>
         </select>
         <select data-testid="filter-account" value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)} className="input-flat w-auto py-2 text-sm">
           <option value="">All accounts</option>
@@ -105,17 +126,20 @@ export default function Transactions() {
                       <td className="px-5 py-3 font-mono text-sm">{t.date}</td>
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-2">
-                          <span className={t.type === "income" ? "badge-income" : "badge-expense"}>{t.type}</span>
+                          <span className={t.type === "income" ? "badge-income" : t.type === "transfer" ? "badge-recurrent" : "badge-expense"}>{t.type}</span>
                           <span className="text-sm font-medium">{t.name}</span>
+                          {t.type === "transfer" && t.to_account_id && (
+                            <span className="text-xs text-[var(--text-secondary)] font-mono">→ {accounts.find((a) => a.id === t.to_account_id)?.name}</span>
+                          )}
                           {t.is_recurrent && <span className="badge-recurrent">↻ {t.recurrence_period || "monthly"}</span>}
                         </div>
                       </td>
-                      <td className="px-5 py-3 text-sm text-[var(--text-secondary)]">{t.category_name || "—"}</td>
+                      <td className="px-5 py-3 text-sm text-[var(--text-secondary)]">{t.category_name || (t.type === "transfer" ? "—" : "—")}</td>
                       <td className="px-5 py-3 text-sm text-[var(--text-secondary)]">{acc?.name || "—"}</td>
                       <td className="px-5 py-3 text-right font-mono text-sm">{formatMoney(t.unit_price, currency)}</td>
                       <td className="px-5 py-3 text-right font-mono text-sm">{t.quantity}</td>
-                      <td className={`px-5 py-3 text-right font-mono text-sm font-medium ${t.type === "income" ? "text-[var(--income)]" : "text-[var(--expense)]"}`}>
-                        {t.type === "income" ? "+" : "−"} {formatMoney(t.billed_amount, currency)}
+                      <td className={`px-5 py-3 text-right font-mono text-sm font-medium ${t.type === "income" ? "text-[var(--income)]" : t.type === "transfer" ? "text-[var(--recurrent)]" : "text-[var(--expense)]"}`}>
+                        {t.type === "income" ? "+" : t.type === "transfer" ? "↔" : "−"} {formatMoney(t.billed_amount, t.currency || currency)}
                       </td>
                       {canEdit && (
                         <td className="px-5 py-3 text-right">
@@ -143,6 +167,13 @@ export default function Transactions() {
           onSaved={() => { setOpen(false); load(); }}
         />
       )}
+      {importOpen && (
+        <CSVImportModal
+          accounts={accounts}
+          onClose={() => setImportOpen(false)}
+          onImported={() => { setImportOpen(false); load(); }}
+        />
+      )}
     </div>
   );
 }
@@ -158,10 +189,17 @@ function TxnModal({ initial, accounts, categories, onClose, onSaved }) {
   const [autoBilled, setAutoBilled] = useState(!initial);
   const [categoryId, setCategoryId] = useState(initial?.category_id || "");
   const [accountId, setAccountId] = useState(initial?.account_id || accounts[0]?.id || "");
+  const [toAccountId, setToAccountId] = useState(initial?.to_account_id || "");
+  const [fxRate, setFxRate] = useState(initial?.fx_rate ?? 1);
   const [isRecurrent, setIsRecurrent] = useState(initial?.is_recurrent || false);
   const [recurrencePeriod, setRecurrencePeriod] = useState(initial?.recurrence_period || "monthly");
   const [notes, setNotes] = useState(initial?.notes || "");
   const [saving, setSaving] = useState(false);
+
+  const fromAccount = accounts.find((a) => a.id === accountId);
+  const toAccount = accounts.find((a) => a.id === toAccountId);
+  const isTransfer = type === "transfer";
+  const showFx = isTransfer && fromAccount && toAccount && fromAccount.currency !== toAccount.currency;
 
   useEffect(() => {
     if (autoBilled) {
@@ -174,6 +212,7 @@ function TxnModal({ initial, accounts, categories, onClose, onSaved }) {
   const save = async (e) => {
     e.preventDefault();
     if (!accountId) { toast.error("Please create an account first"); return; }
+    if (isTransfer && (!toAccountId || toAccountId === accountId)) { toast.error("Select a different destination account"); return; }
     setSaving(true);
     try {
       const cat = filteredCats.find((c) => c.id === categoryId);
@@ -182,9 +221,12 @@ function TxnModal({ initial, accounts, categories, onClose, onSaved }) {
         unit_price: parseFloat(unitPrice) || 0,
         quantity: parseFloat(quantity) || 1,
         billed_amount: parseFloat(billed) || 0,
-        category_id: categoryId || null,
-        category_name: cat?.name || null,
+        currency: fromAccount?.currency || "INR",
+        fx_rate: parseFloat(fxRate) || 1,
+        category_id: isTransfer ? null : (categoryId || null),
+        category_name: isTransfer ? null : (cat?.name || null),
         account_id: accountId,
+        to_account_id: isTransfer ? toAccountId : null,
         is_recurrent: isRecurrent,
         recurrence_period: isRecurrent ? recurrencePeriod : null,
         notes: notes || null,
@@ -209,6 +251,9 @@ function TxnModal({ initial, accounts, categories, onClose, onSaved }) {
         <div className="flex gap-2 mb-6">
           <button type="button" onClick={() => setType("expense")} data-testid="type-expense-btn" className={`flex-1 py-2.5 border ${type === "expense" ? "bg-[var(--expense-bg)] text-[var(--expense)] border-[var(--expense)] font-semibold" : "border-[var(--border)] text-[var(--text-secondary)]"}`}>Expense</button>
           <button type="button" onClick={() => setType("income")} data-testid="type-income-btn" className={`flex-1 py-2.5 border ${type === "income" ? "bg-[var(--income-bg)] text-[var(--income)] border-[var(--income)] font-semibold" : "border-[var(--border)] text-[var(--text-secondary)]"}`}>Income</button>
+          <button type="button" onClick={() => setType("transfer")} data-testid="type-transfer-btn" className={`flex-1 py-2.5 border flex items-center justify-center gap-2 ${type === "transfer" ? "bg-[var(--recurrent-bg)] text-[var(--recurrent)] border-[var(--recurrent)] font-semibold" : "border-[var(--border)] text-[var(--text-secondary)]"}`}>
+            <ArrowLeftRight className="w-4 h-4" strokeWidth={1.5} /> Transfer
+          </button>
         </div>
 
         <form onSubmit={save} className="space-y-4">
@@ -246,20 +291,41 @@ function TxnModal({ initial, accounts, categories, onClose, onSaved }) {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="label-caps block mb-2">Category</label>
-              <select data-testid="txn-category-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="input-flat">
+              <label className="label-caps block mb-2">{isTransfer ? "Category (not used)" : "Category"}</label>
+              <select data-testid="txn-category-select" disabled={isTransfer} value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="input-flat disabled:opacity-50">
                 <option value="">— None —</option>
                 {filteredCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
             <div>
-              <label className="label-caps block mb-2">Account *</label>
+              <label className="label-caps block mb-2">{isTransfer ? "From account *" : "Account *"}</label>
               <select data-testid="txn-account-select" required value={accountId} onChange={(e) => setAccountId(e.target.value)} className="input-flat">
                 <option value="">— Select —</option>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.currency}</option>)}
               </select>
             </div>
           </div>
+
+          {isTransfer && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="label-caps block mb-2">To account *</label>
+                <select data-testid="txn-to-account-select" required value={toAccountId} onChange={(e) => setToAccountId(e.target.value)} className="input-flat">
+                  <option value="">— Select destination —</option>
+                  {accounts.filter((a) => a.id !== accountId).map((a) => <option key={a.id} value={a.id}>{a.name} · {a.currency}</option>)}
+                </select>
+              </div>
+              {showFx && (
+                <div>
+                  <label className="label-caps block mb-2">FX rate ({fromAccount.currency} → {toAccount.currency})</label>
+                  <input data-testid="txn-fx-input" type="number" step="0.0001" value={fxRate} onChange={(e) => setFxRate(e.target.value)} className="input-flat font-mono" />
+                  <div className="text-xs text-[var(--text-secondary)] mt-1 font-mono">
+                    {Number(billed || 0).toFixed(2)} {fromAccount.currency} → {(Number(billed || 0) * (parseFloat(fxRate) || 1)).toFixed(2)} {toAccount.currency}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="border border-[var(--border)] p-4">
             <label className="flex items-center gap-3 cursor-pointer">

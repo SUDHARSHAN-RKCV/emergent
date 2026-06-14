@@ -206,3 +206,91 @@ def test_mfa_setup_and_enable_disable():
     # cleanup
     d.users.delete_one({"user_id": "test-mfa-user"})
     d.user_sessions.delete_one({"session_token": "test_session_mfa_123"})
+
+
+# ---------------- Transfers ----------------
+@pytest.fixture(scope="module")
+def two_accounts():
+    a = requests.post(f"{BASE}/api/accounts", json={"name": "TEST_Src", "type": "bank", "currency": "INR", "opening_balance": 5000.0}, headers=H(OWNER_TOK)).json()
+    b = requests.post(f"{BASE}/api/accounts", json={"name": "TEST_Dst", "type": "wallet", "currency": "INR", "opening_balance": 0.0}, headers=H(OWNER_TOK)).json()
+    yield a["id"], b["id"]
+    requests.delete(f"{BASE}/api/accounts/{a['id']}", headers=H(OWNER_TOK))
+    requests.delete(f"{BASE}/api/accounts/{b['id']}", headers=H(OWNER_TOK))
+
+def test_transfer_same_account_400(two_accounts):
+    src, _ = two_accounts
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    r = requests.post(f"{BASE}/api/transactions", json={
+        "type": "transfer", "name": "TEST_BadTransfer", "date": today,
+        "unit_price": 100, "quantity": 1, "billed_amount": 100,
+        "account_id": src, "to_account_id": src
+    }, headers=H(OWNER_TOK))
+    assert r.status_code == 400, r.text
+
+def test_transfer_updates_balances(two_accounts):
+    src, dst = two_accounts
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    r = requests.post(f"{BASE}/api/transactions", json={
+        "type": "transfer", "name": "TEST_Transfer", "date": today,
+        "unit_price": 500, "quantity": 1, "billed_amount": 500,
+        "account_id": src, "to_account_id": dst
+    }, headers=H(OWNER_TOK))
+    assert r.status_code == 200, r.text
+    accs = {a["id"]: a for a in requests.get(f"{BASE}/api/accounts", headers=H(OWNER_TOK)).json()}
+    assert accs[src]["current_balance"] == 4500.0
+    assert accs[dst]["current_balance"] == 500.0
+    requests.delete(f"{BASE}/api/transactions/{r.json()['id']}", headers=H(OWNER_TOK))
+
+# ---------------- Search ----------------
+def test_search_q_filters(txn_ids):
+    r = requests.get(f"{BASE}/api/transactions?q=milk", headers=H(OWNER_TOK))
+    assert r.status_code == 200
+    rows = r.json()
+    assert rows
+    for t in rows:
+        hay = (t.get("name","") + " " + (t.get("notes") or "")).lower()
+        assert "milk" in hay
+
+# ---------------- CSV Import ----------------
+def test_csv_import(account_id, cat_ids):
+    eid, _ = cat_ids
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    payload = {"account_id": account_id, "rows": [
+        {"type": "expense", "name": "TEST_CSV_1", "date": today, "unit_price": 10, "quantity": 2, "billed_amount": 20, "category_name": "test_food", "is_recurrent": "true", "recurrence_period": "monthly"},
+        {"type": "income", "name": "TEST_CSV_2", "date": today, "unit_price": 100, "quantity": 1, "billed_amount": 100, "category_name": "TEST_Bonus", "is_recurrent": "false"},
+    ]}
+    r = requests.post(f"{BASE}/api/transactions/import", json=payload, headers=H(OWNER_TOK))
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["inserted"] == 2 and d["total"] == 2
+    txns = requests.get(f"{BASE}/api/transactions", headers=H(OWNER_TOK)).json()
+    names = [t["name"] for t in txns]
+    assert "TEST_CSV_1" in names and "TEST_CSV_2" in names
+    csv1 = [t for t in txns if t["name"] == "TEST_CSV_1"][0]
+    assert csv1.get("is_recurrent") is True
+
+def test_viewer_cannot_import(account_id):
+    r = requests.post(f"{BASE}/api/transactions/import", json={"account_id": account_id, "rows": []}, headers=H(VIEWER_TOK))
+    assert r.status_code == 403
+
+# ---------------- Budgets ----------------
+def test_budgets_crud_and_progress(cat_ids, txn_ids):
+    eid, _ = cat_ids
+    r = requests.post(f"{BASE}/api/budgets", json={"category_id": eid, "monthly_limit": 200.0}, headers=H(OWNER_TOK))
+    assert r.status_code == 200, r.text
+    # Re-post replaces
+    r2 = requests.post(f"{BASE}/api/budgets", json={"category_id": eid, "monthly_limit": 300.0}, headers=H(OWNER_TOK))
+    assert r2.status_code == 200
+    lst = requests.get(f"{BASE}/api/budgets", headers=H(OWNER_TOK)).json()
+    mine = [b for b in lst if b["category_id"] == eid]
+    assert len(mine) == 1
+    b = mine[0]
+    for k in ["spent_this_month", "remaining", "progress_pct", "over_budget", "monthly_limit"]:
+        assert k in b
+    assert b["monthly_limit"] == 300.0
+    # viewer can't write
+    rv = requests.post(f"{BASE}/api/budgets", json={"category_id": eid, "monthly_limit": 100.0}, headers=H(VIEWER_TOK))
+    assert rv.status_code == 403
+    # delete
+    d = requests.delete(f"{BASE}/api/budgets/{b['id']}", headers=H(OWNER_TOK))
+    assert d.status_code == 200

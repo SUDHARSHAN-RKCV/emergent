@@ -93,15 +93,19 @@ class Transaction(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
-    type: Literal["expense", "income"]
+    type: Literal["expense", "income", "transfer"]
     name: str
     date: str  # ISO date string
     unit_price: float
     quantity: float = 1.0
     billed_amount: float
+    currency: str = "INR"
+    fx_rate: float = 1.0  # converts billed_amount to user's preferred currency
     category_id: Optional[str] = None
     category_name: Optional[str] = None
     account_id: str
+    to_account_id: Optional[str] = None  # for transfers: destination
+    transfer_group_id: Optional[str] = None
     is_recurrent: bool = False
     recurrence_period: Optional[Literal["weekly", "monthly", "yearly"]] = None
     notes: Optional[str] = None
@@ -109,18 +113,38 @@ class Transaction(BaseModel):
 
 
 class TransactionCreate(BaseModel):
-    type: Literal["expense", "income"]
+    type: Literal["expense", "income", "transfer"]
     name: str
     date: str
-    unit_price: float
+    unit_price: float = 0.0
     quantity: float = 1.0
     billed_amount: float
+    currency: str = "INR"
+    fx_rate: float = 1.0
     category_id: Optional[str] = None
     category_name: Optional[str] = None
     account_id: str
+    to_account_id: Optional[str] = None
     is_recurrent: bool = False
     recurrence_period: Optional[Literal["weekly", "monthly", "yearly"]] = None
     notes: Optional[str] = None
+
+
+class Budget(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    category_id: str
+    category_name: Optional[str] = None
+    monthly_limit: float
+    currency: str = "INR"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class BudgetCreate(BaseModel):
+    category_id: str
+    monthly_limit: float
+    currency: str = "INR"
 
 
 class MFAVerify(BaseModel):
@@ -399,15 +423,22 @@ async def update_role(target_user_id: str, payload: RoleUpdate, user=Depends(req
 @api_router.get("/accounts")
 async def list_accounts(user=Depends(require_user)):
     accounts = await db.accounts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(1000)
-    # compute current balance for each
     for acc in accounts:
+        # incomes & expenses on this account
         agg = await db.transactions.aggregate([
             {"$match": {"user_id": user["user_id"], "account_id": acc["id"]}},
             {"$group": {"_id": "$type", "total": {"$sum": "$billed_amount"}}}
         ]).to_list(10)
         income = sum(x["total"] for x in agg if x["_id"] == "income")
         expense = sum(x["total"] for x in agg if x["_id"] == "expense")
-        acc["current_balance"] = acc.get("opening_balance", 0) + income - expense
+        transfer_out = sum(x["total"] for x in agg if x["_id"] == "transfer")
+        # transfers into this account
+        ti_agg = await db.transactions.aggregate([
+            {"$match": {"user_id": user["user_id"], "type": "transfer", "to_account_id": acc["id"]}},
+            {"$group": {"_id": None, "total": {"$sum": "$billed_amount"}}}
+        ]).to_list(2)
+        transfer_in = ti_agg[0]["total"] if ti_agg else 0
+        acc["current_balance"] = acc.get("opening_balance", 0) + income - expense + transfer_in - transfer_out
     return accounts
 
 
@@ -469,29 +500,38 @@ async def list_transactions(
     is_recurrent: Optional[bool] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    q: Optional[str] = None,
     limit: int = 500,
 ):
-    q = {"user_id": user["user_id"]}
+    query = {"user_id": user["user_id"]}
     if type:
-        q["type"] = type
+        query["type"] = type
     if account_id:
-        q["account_id"] = account_id
+        query["$or"] = [{"account_id": account_id}, {"to_account_id": account_id}]
     if category_id:
-        q["category_id"] = category_id
+        query["category_id"] = category_id
     if is_recurrent is not None:
-        q["is_recurrent"] = is_recurrent
+        query["is_recurrent"] = is_recurrent
     if start_date or end_date:
-        q["date"] = {}
+        query["date"] = {}
         if start_date:
-            q["date"]["$gte"] = start_date
+            query["date"]["$gte"] = start_date
         if end_date:
-            q["date"]["$lte"] = end_date
-    txns = await db.transactions.find(q, {"_id": 0}).sort("date", -1).to_list(limit)
+            query["date"]["$lte"] = end_date
+    if q:
+        # search by name or notes (case-insensitive)
+        regex = {"$regex": q, "$options": "i"}
+        query["$and"] = [{"$or": [{"name": regex}, {"notes": regex}]}]
+    txns = await db.transactions.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
     return txns
 
 
 @api_router.post("/transactions")
 async def create_transaction(payload: TransactionCreate, user=Depends(require_role(["owner", "editor"]))):
+    # Validate transfer
+    if payload.type == "transfer":
+        if not payload.to_account_id or payload.to_account_id == payload.account_id:
+            raise HTTPException(status_code=400, detail="Transfer needs distinct from/to account")
     # Resolve category name if id provided
     cat_name = payload.category_name
     if payload.category_id and not cat_name:
@@ -503,6 +543,60 @@ async def create_transaction(payload: TransactionCreate, user=Depends(require_ro
     doc["created_at"] = doc["created_at"].isoformat()
     await db.transactions.insert_one(doc)
     return txn.model_dump()
+
+
+@api_router.post("/transactions/import")
+async def import_transactions(payload: dict, user=Depends(require_role(["owner", "editor"]))):
+    """Bulk import. payload = { account_id: str, rows: [ { date, name, unit_price, quantity, billed_amount, type, category_name?, is_recurrent?, recurrence_period?, notes? } ] }"""
+    account_id = payload.get("account_id")
+    rows = payload.get("rows", [])
+    if not account_id or not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="account_id and rows required")
+    # validate account belongs to user
+    acc = await db.accounts.find_one({"id": account_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    # category lookup
+    cats = await db.categories.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    cat_by_name = {c["name"].lower(): c for c in cats}
+    inserted = 0
+    errors = []
+    for i, r in enumerate(rows):
+        try:
+            ttype = (r.get("type") or "expense").lower()
+            if ttype not in ("expense", "income"):
+                errors.append({"row": i + 1, "error": "invalid type"}); continue
+            cat_name = r.get("category_name") or r.get("category")
+            cat = cat_by_name.get((cat_name or "").lower())
+            unit = float(r.get("unit_price") or 0)
+            qty = float(r.get("quantity") or 1)
+            billed = float(r.get("billed_amount") if r.get("billed_amount") not in (None, "") else (unit * qty))
+            txn_doc = {
+                "id": str(uuid.uuid4()),
+                "user_id": user["user_id"],
+                "type": ttype,
+                "name": str(r.get("name") or "Imported").strip(),
+                "date": str(r.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")),
+                "unit_price": unit,
+                "quantity": qty,
+                "billed_amount": billed,
+                "currency": r.get("currency") or acc.get("currency", "INR"),
+                "fx_rate": float(r.get("fx_rate") or 1.0),
+                "category_id": cat["id"] if cat else None,
+                "category_name": cat["name"] if cat else cat_name,
+                "account_id": account_id,
+                "to_account_id": None,
+                "transfer_group_id": None,
+                "is_recurrent": bool(r.get("is_recurrent") in (True, "true", "True", "1", 1)),
+                "recurrence_period": r.get("recurrence_period") or None,
+                "notes": r.get("notes") or None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.transactions.insert_one(txn_doc)
+            inserted += 1
+        except Exception as e:
+            errors.append({"row": i + 1, "error": str(e)})
+    return {"inserted": inserted, "errors": errors, "total": len(rows)}
 
 
 @api_router.put("/transactions/{txn_id}")
@@ -526,6 +620,47 @@ async def update_transaction(txn_id: str, payload: TransactionCreate, user=Depen
 @api_router.delete("/transactions/{txn_id}")
 async def delete_transaction(txn_id: str, user=Depends(require_role(["owner", "editor"]))):
     await db.transactions.delete_one({"id": txn_id, "user_id": user["user_id"]})
+    return {"ok": True}
+
+
+# ---------------------- Budgets ----------------------
+@api_router.get("/budgets")
+async def list_budgets(user=Depends(require_user)):
+    budgets = await db.budgets.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    # Compute current-month spent per budget
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1).strftime("%Y-%m-%d")
+    for b in budgets:
+        txns = await db.transactions.find(
+            {"user_id": user["user_id"], "type": "expense",
+             "category_id": b["category_id"], "date": {"$gte": month_start}},
+            {"_id": 0}
+        ).to_list(2000)
+        spent = sum(t["billed_amount"] for t in txns)
+        b["spent_this_month"] = spent
+        b["remaining"] = max(0.0, b["monthly_limit"] - spent)
+        b["progress_pct"] = (spent / b["monthly_limit"] * 100) if b["monthly_limit"] else 0
+        b["over_budget"] = spent > b["monthly_limit"]
+    return budgets
+
+
+@api_router.post("/budgets")
+async def create_budget(payload: BudgetCreate, user=Depends(require_role(["owner", "editor"]))):
+    cat = await db.categories.find_one({"id": payload.category_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    # Replace existing budget for the same category
+    await db.budgets.delete_many({"user_id": user["user_id"], "category_id": payload.category_id})
+    b = Budget(user_id=user["user_id"], category_name=cat["name"], **payload.model_dump())
+    doc = b.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.budgets.insert_one(doc)
+    return b.model_dump()
+
+
+@api_router.delete("/budgets/{budget_id}")
+async def delete_budget(budget_id: str, user=Depends(require_role(["owner", "editor"]))):
+    await db.budgets.delete_one({"id": budget_id, "user_id": user["user_id"]})
     return {"ok": True}
 
 

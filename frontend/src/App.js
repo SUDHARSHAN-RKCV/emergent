@@ -11,6 +11,7 @@ import Dashboard from "@/pages/Dashboard";
 import Accounts from "@/pages/Accounts";
 import Transactions from "@/pages/Transactions";
 import Categories from "@/pages/Categories";
+import Budgets from "@/pages/Budgets";
 import Analytics from "@/pages/Analytics";
 import Settings from "@/pages/Settings";
 
@@ -33,6 +34,7 @@ function AppRouter() {
       <Route path="/accounts" element={<ProtectedLayout><Accounts /></ProtectedLayout>} />
       <Route path="/transactions" element={<ProtectedLayout><Transactions /></ProtectedLayout>} />
       <Route path="/categories" element={<ProtectedLayout><Categories /></ProtectedLayout>} />
+      <Route path="/budgets" element={<ProtectedLayout><Budgets /></ProtectedLayout>} />
       <Route path="/analytics" element={<ProtectedLayout><Analytics /></ProtectedLayout>} />
       <Route path="/settings" element={<ProtectedLayout><Settings /></ProtectedLayout>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

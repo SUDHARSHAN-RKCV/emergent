@@ -1,6 +1,6 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Wallet, ArrowRightLeft, FolderTree, LineChart, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, Wallet, ArrowRightLeft, FolderTree, LineChart, Settings, LogOut, Target } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const navItems = [
@@ -8,6 +8,7 @@ const navItems = [
   { to: "/accounts", label: "Accounts", icon: Wallet, testid: "nav-accounts" },
   { to: "/transactions", label: "Transactions", icon: ArrowRightLeft, testid: "nav-transactions" },
   { to: "/categories", label: "Categories", icon: FolderTree, testid: "nav-categories" },
+  { to: "/budgets", label: "Budgets", icon: Target, testid: "nav-budgets" },
   { to: "/analytics", label: "Analytics", icon: LineChart, testid: "nav-analytics" },
   { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings" },
 ];

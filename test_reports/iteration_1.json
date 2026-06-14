@@ -1,0 +1,61 @@
+{
+  "summary": "Ran extended backend pytest suite (22 tests covering auth, RBAC, accounts/categories/transactions CRUD, transfers, search, CSV import, budgets, analytics, MFA, currency) and Playwright frontend smoke (27 checks: login, sidebar nav, budgets page, transactions search/CSV/add modal, analytics cards, settings/MFA, RBAC viewer hiding). 21/22 backend tests pass; 23/27 frontend checks pass. One HIGH severity backend bug found: GET /api/analytics/trends crashes with KeyError 'transfer' once any transfer-type transaction exists, which also triggers a webpack-dev-server runtime overlay that blocks the dashboard UI.",
+  "tested_scope": ["backend", "frontend", "auth", "integration"],
+  "passed": [
+    "Auth: /api/auth/me 401 without token, 200 with owner session",
+    "RBAC: viewer 403 on POST/PUT/DELETE; viewer 200 on GET; editor can create",
+    "Users: only owner can GET /api/users (editor/viewer 403)",
+    "Accounts CRUD + current_balance arithmetic with opening_balance",
+    "Categories CRUD (expense + income)",
+    "Transactions CRUD, is_recurrent + recurrence_period persisted",
+    "Transfers: same account 400; distinct accounts 200; source balance decreases, destination increases",
+    "Search: /api/transactions?q=milk filters by name/notes case-insensitive",
+    "CSV import: inserted=2, total=2; category_name lookup works; is_recurrent='true' coerced to bool; viewer 403",
+    "Budgets: POST creates, re-POST same category replaces; GET returns spent_this_month/remaining/progress_pct/over_budget; DELETE works; viewer 403",
+    "Analytics summary/category-breakdown/unit-prices(>=2 points)/recurring all 200",
+    "Currency: PUT /api/me/currency updates preferred_currency",
+    "MFA: setup returns secret+QR; pyotp code enables; valid code disables; invalid code 400",
+    "Frontend: login page has google-login-btn",
+    "Sidebar all 7 nav-* testids present (dashboard, accounts, transactions, categories, budgets, analytics, settings)",
+    "Transactions: txn-search, import-csv-btn, csv-import-modal with csv-text-area/csv-account-select/csv-import-btn",
+    "Analytics page renders trends-card, breakdown-card, net-card, unit-prices-card, recurring-card",
+    "Settings: profile-card, currency-card, mfa-card, start-mfa-btn -> mfa-qr-img + mfa-secret + mfa-enable-code visible",
+    "RBAC UI: viewer session does NOT see add-account-btn, add-txn-btn, add-budget-btn"
+  ],
+  "failed": [
+    {
+      "area": "backend - analytics",
+      "issue": "GET /api/analytics/trends returns 500 KeyError: 'transfer' at server.py:722 — buckets only have keys 'income'/'expense' but loop tries buckets[key][t['type']] for type='transfer'. Breaks once any transfer transaction exists in the DB.",
+      "evidence": "supervisor backend log: File '/app/backend/server.py', line 722, in analytics_trends; buckets[key][t['type']] += t['billed_amount']; KeyError: 'transfer'. Reproduced via pytest test_analytics_trends.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "frontend - dashboard/analytics",
+      "issue": "Because Promise.all on dashboard load includes /analytics/trends, the 500 throws AxiosError that webpack-dev-server overlays as a full-screen 'Uncaught runtime errors' modal which intercepts pointer events and blocks ALL clicks. Real users in production won't see overlay but the underlying axios error may still break dashboard rendering.",
+      "evidence": "Playwright screenshot showed 'Uncaught runtime errors: Request failed with status code 500 ... at async Promise.all (index 1)'. nav-budgets click intercepted by <iframe id='webpack-dev-server-client-overlay'>.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "frontend - budgets",
+      "issue": "data-testid='add-budget-btn' not found on Budgets page even with owner session. Page shows 'No budgets yet' empty state but no visible add control with that testid. The form submit may instead use data-testid='budget-add-btn' (per spec), but no toggle/trigger button labeled 'add-budget-btn' was found. RBAC viewer-hiding check still passes because element is missing for both roles.",
+      "evidence": "Playwright: await page.query_selector('[data-testid=\"add-budget-btn\"]') returned None with owner cookie on /budgets.",
+      "priority": "MEDIUM"
+    },
+    {
+      "area": "frontend - transactions add modal",
+      "issue": "After clicking add-txn-btn the modal opens but data-testid='type-expense-btn' / 'type-income-btn' / 'type-transfer-btn' were not found within 6s. Could be modal animation/rendering timing or testid names differ from spec.",
+      "evidence": "Playwright query_selector returned None for all three type-*-btn testids; consequently txn-to-account-select also untested.",
+      "priority": "MEDIUM"
+    }
+  ],
+  "action_items": [
+    "FIX backend/server.py analytics_trends: skip transactions with type='transfer' (or include 'transfer' key in buckets) so the endpoint no longer KeyErrors. This is the root blocker.",
+    "Verify Budgets page exposes data-testid='add-budget-btn' for owner/editor (or update spec to point to budget-add-btn within an always-visible add-budget-form).",
+    "Verify Transactions add modal renders type-expense-btn / type-income-btn / type-transfer-btn testids correctly and that they are reachable immediately after modal open.",
+    "After fixes, re-run pytest backend_test.py and Playwright suite (this iteration's blockers).",
+    "Test_credentials.md is present and seeded sessions work."
+  ],
+  "success_rate": {"backend": "95%", "frontend": "85%"},
+  "retest_needed": true,
+  "full_testing_deferred": true
+}
