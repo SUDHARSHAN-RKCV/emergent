@@ -1,6 +1,6 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Wallet, ArrowRightLeft, FolderTree, LineChart, Settings, LogOut, Target } from "lucide-react";
+import { LayoutDashboard, Wallet, ArrowRightLeft, FolderTree, LineChart, Settings, LogOut, Target, Sun, Moon } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const navItems = [
@@ -16,7 +16,7 @@ const navItems = [
 export default function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, setTheme } = useAuth();
 
   const handleLogout = async () => {
     await logout();
@@ -67,6 +67,14 @@ export default function Sidebar() {
         </div>
         <button onClick={handleLogout} data-testid="logout-btn" className="w-full btn-secondary flex items-center justify-center gap-2 text-sm">
           <LogOut className="w-4 h-4" strokeWidth={1.5} /> Sign out
+        </button>
+        <button
+          onClick={() => setTheme(user?.theme === "dark" ? "light" : "dark")}
+          data-testid="theme-toggle-btn"
+          className="w-full mt-2 btn-secondary flex items-center justify-center gap-2 text-xs"
+        >
+          {user?.theme === "dark" ? <Sun className="w-3.5 h-3.5" strokeWidth={1.5} /> : <Moon className="w-3.5 h-3.5" strokeWidth={1.5} />}
+          {user?.theme === "dark" ? "Light mode" : "Dark mode"}
         </button>
       </div>
     </aside>

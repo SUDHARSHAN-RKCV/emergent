@@ -28,6 +28,18 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, [checkAuth]);
 
+  useEffect(() => {
+    if (user?.theme) {
+      document.documentElement.setAttribute("data-theme", user.theme);
+    }
+  }, [user?.theme]);
+
+  const setTheme = async (theme) => {
+    document.documentElement.setAttribute("data-theme", theme);
+    setUser((u) => u ? { ...u, theme } : u);
+    try { await api.put("/me/theme", { theme }); } catch {}
+  };
+
   const logout = async () => {
     try {
       await api.post("/auth/logout");
@@ -38,7 +50,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, setUser, loading, checkAuth, logout }}>
+    <AuthContext.Provider value={{ user, setUser, loading, checkAuth, logout, setTheme }}>
       {children}
     </AuthContext.Provider>
   );

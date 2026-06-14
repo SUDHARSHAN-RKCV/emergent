@@ -9,6 +9,8 @@ export default function Settings() {
   const { user, checkAuth } = useAuth();
   const [users, setUsers] = useState([]);
   const [currency, setCurrency] = useState(user?.preferred_currency || "INR");
+  const [waNumber, setWaNumber] = useState(user?.whatsapp_number || "");
+  const [waEnabled, setWaEnabled] = useState(user?.whatsapp_enabled || false);
 
   // MFA state
   const [mfaSetup, setMfaSetup] = useState(null); // { qr_code_data_uri, secret }
@@ -61,6 +63,34 @@ export default function Settings() {
     await api.put("/me/currency", { currency });
     toast.success("Default currency updated");
     await checkAuth();
+  };
+
+  const saveWhatsApp = async () => {
+    try {
+      await api.put("/me/whatsapp", { whatsapp_number: waNumber, whatsapp_enabled: waEnabled });
+      toast.success("WhatsApp reminders updated");
+      await checkAuth();
+    } catch (e) {
+      toast.error("Failed to save");
+    }
+  };
+
+  const disableUser = async (uid, disabled) => {
+    try {
+      await api.put(`/users/${uid}/disable`, { disabled });
+      toast.success(disabled ? "User disabled" : "User enabled");
+      const r = await api.get("/users"); setUsers(r.data);
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
+
+  const deleteUserHard = async (uid, email) => {
+    if (!window.confirm(`Hard-delete ${email}? This purges ALL their data and CANNOT be undone.`)) return;
+    if (!window.confirm("Are you absolutely sure?")) return;
+    try {
+      await api.delete(`/users/${uid}`);
+      toast.success("User deleted");
+      const r = await api.get("/users"); setUsers(r.data);
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
   };
 
   const changeRole = async (uid, role) => {
@@ -155,7 +185,27 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* RBAC users (Owner only) */}
+      {/* WhatsApp Reminders */}
+      <div className="card-flat p-6 mb-6" data-testid="whatsapp-card">
+        <div className="label-caps mb-1">Notifications</div>
+        <h3 className="font-heading text-xl font-bold mb-4">WhatsApp reminders</h3>
+        <p className="text-sm text-[var(--text-secondary)] mb-4">Get a WhatsApp message 24 hours before each recurring expense is due. Off by default.</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="label-caps block mb-2">WhatsApp number (with country code)</label>
+            <input data-testid="wa-number-input" value={waNumber} onChange={(e) => setWaNumber(e.target.value)} className="input-flat font-mono" placeholder="+919876543210" />
+          </div>
+          <div className="flex items-end">
+            <label className="flex items-center gap-3 cursor-pointer pb-2">
+              <input data-testid="wa-enabled-toggle" type="checkbox" checked={waEnabled} onChange={(e) => setWaEnabled(e.target.checked)} className="w-4 h-4 accent-[var(--primary)]" />
+              <span className="text-sm font-medium">Enable 24h-prior reminders</span>
+            </label>
+          </div>
+        </div>
+        <button onClick={saveWhatsApp} data-testid="wa-save-btn" className="btn-primary mt-4">Save preferences</button>
+      </div>
+
+      {/* RBAC users */}
       {user?.role === "owner" && (
         <div className="card-flat p-6" data-testid="users-card">
           <div className="label-caps mb-1">RBAC · Owner only</div>
@@ -181,17 +231,35 @@ export default function Settings() {
                   <td className="py-3 text-sm text-[var(--text-secondary)]">{u.email}</td>
                   <td className="py-3"><span className="badge-recurrent">{u.role}</span></td>
                   <td className="py-3 text-right">
-                    <select
-                      data-testid={`role-select-${u.user_id}`}
-                      value={u.role}
-                      onChange={(e) => changeRole(u.user_id, e.target.value)}
-                      disabled={u.user_id === user.user_id}
-                      className="input-flat w-auto py-1.5 text-sm"
-                    >
-                      <option value="owner">Owner</option>
-                      <option value="editor">Editor</option>
-                      <option value="viewer">Viewer</option>
-                    </select>
+                    <div className="flex items-center gap-2 justify-end">
+                      <select
+                        data-testid={`role-select-${u.user_id}`}
+                        value={u.role}
+                        onChange={(e) => changeRole(u.user_id, e.target.value)}
+                        disabled={u.user_id === user.user_id}
+                        className="input-flat w-auto py-1.5 text-sm"
+                      >
+                        <option value="owner">Owner</option>
+                        <option value="editor">Editor</option>
+                        <option value="viewer">Viewer</option>
+                      </select>
+                      <button
+                        onClick={() => disableUser(u.user_id, !u.disabled)}
+                        disabled={u.user_id === user.user_id}
+                        data-testid={`disable-user-${u.user_id}`}
+                        className="btn-secondary text-xs px-3 py-1.5 disabled:opacity-30"
+                      >
+                        {u.disabled ? "Enable" : "Disable"}
+                      </button>
+                      <button
+                        onClick={() => deleteUserHard(u.user_id, u.email)}
+                        disabled={u.user_id === user.user_id}
+                        data-testid={`delete-user-${u.user_id}`}
+                        className="text-xs px-3 py-1.5 border border-[var(--expense)] text-[var(--expense)] hover:bg-[var(--expense-bg)] disabled:opacity-30"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

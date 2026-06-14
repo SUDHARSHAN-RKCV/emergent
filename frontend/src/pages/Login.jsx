@@ -16,7 +16,8 @@ function formatApiErrorDetail(detail) {
 export default function Login() {
   const navigate = useNavigate();
   const { user, loading, setUser } = useAuth();
-  const [mode, setMode] = useState("login"); // login | register
+  const [mode, setMode] = useState("login"); // login | register | otp
+  const [otp, setOtp] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -46,18 +47,43 @@ export default function Login() {
     }
     setBusy(true);
     try {
-      const endpoint = mode === "register" ? "/auth/register" : "/auth/login";
-      const payload = mode === "register" ? { email, password, name: name.trim() } : { email, password };
-      const res = await api.post(endpoint, payload);
-      setUser(res.data);
-      toast.success(mode === "register" ? "Welcome to Ledger" : "Signed in");
-      if (res.data.mfa_enabled && !res.data.mfa_verified) navigate("/mfa-verify", { replace: true });
-      else navigate("/dashboard", { replace: true });
+      if (mode === "register") {
+        await api.post("/auth/register", { email, password, name: name.trim() });
+        toast.success("Verification code sent to your email");
+        setMode("otp");
+      } else {
+        const res = await api.post("/auth/login", { email, password });
+        setUser(res.data);
+        toast.success("Signed in");
+        if (res.data.mfa_enabled && !res.data.mfa_verified) navigate("/mfa-verify", { replace: true });
+        else navigate("/dashboard", { replace: true });
+      }
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Failed");
     } finally {
       setBusy(false);
     }
+  };
+
+  const verifyOtp = async (e) => {
+    e.preventDefault();
+    if (otp.length !== 6) return;
+    setBusy(true);
+    try {
+      const res = await api.post("/auth/verify-otp", { email, otp });
+      setUser(res.data);
+      toast.success("Account verified");
+      navigate("/dashboard", { replace: true });
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Invalid OTP");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendOtp = async () => {
+    try { await api.post("/auth/resend-otp", { email }); toast.success("New code sent"); }
+    catch { toast.error("Failed to resend"); }
   };
 
   return (
@@ -100,7 +126,29 @@ export default function Login() {
               : "Sign in with email & password, or continue with Google. If MFA is enabled, you'll be prompted for your authenticator code next."}
           </p>
 
-          <form onSubmit={submit} className="space-y-3 mb-4">
+          <form onSubmit={mode === "otp" ? verifyOtp : submit} className="space-y-3 mb-4">
+            {mode === "otp" ? (
+              <>
+                <div className="card-flat p-3 text-sm text-[var(--text-secondary)]" data-testid="otp-info">
+                  Code sent to <strong className="text-[var(--text)]">{email}</strong>. Check your inbox.
+                </div>
+                <input
+                  data-testid="otp-input"
+                  autoFocus inputMode="numeric" maxLength={6}
+                  value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+                  className="input-flat font-mono text-3xl text-center tracking-[0.5em] py-4"
+                  placeholder="000000"
+                />
+                <button type="submit" disabled={busy || otp.length !== 6} data-testid="otp-verify-btn" className="btn-primary w-full py-3 disabled:opacity-50">
+                  {busy ? "…" : "Verify & continue"}
+                </button>
+                <button type="button" onClick={resendOtp} data-testid="otp-resend-btn" className="w-full text-sm text-[var(--text-secondary)] hover:text-[var(--text)] py-2">
+                  Resend code
+                </button>
+                <button type="button" onClick={() => { setMode("register"); setOtp(""); }} className="w-full text-xs text-[var(--text-secondary)] py-1">← Back</button>
+              </>
+            ) : (
+              <>
             {mode === "register" && (
               <div>
                 <label className="label-caps block mb-2">Name</label>
@@ -116,8 +164,10 @@ export default function Login() {
               <input data-testid="auth-password-input" required type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="input-flat" placeholder={mode === "register" ? "min 8 characters" : "••••••••"} />
             </div>
             <button type="submit" data-testid="auth-submit-btn" disabled={busy} className="btn-primary w-full py-3 disabled:opacity-50">
-              {busy ? "…" : mode === "register" ? "Create account" : "Sign in"}
+              {busy ? "…" : mode === "register" ? "Send verification code" : "Sign in"}
             </button>
+              </>
+            )}
           </form>
 
           <div className="text-center text-sm text-[var(--text-secondary)] mb-4">

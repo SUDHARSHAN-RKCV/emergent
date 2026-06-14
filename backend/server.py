@@ -18,6 +18,8 @@ import qrcode
 import requests as http_requests
 import bcrypt
 import secrets as py_secrets
+import asyncio
+import resend
 
 
 ROOT_DIR = Path(__file__).parent
@@ -47,6 +49,46 @@ def verify_password(plain: str, hashed: str) -> bool:
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
+resend.api_key = os.environ.get("RESEND_API_KEY", "")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+
+
+async def send_otp_email(to_email: str, otp: str, name: str):
+    if not resend.api_key:
+        logging.warning("RESEND_API_KEY missing; OTP not sent (dev mode)")
+        return
+    html = f"""<div style='font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#F4F3EF;color:#1C1C1A'>
+    <h2 style='font-weight:900;letter-spacing:-0.02em;margin:0 0 16px'>Verify your Ledger account</h2>
+    <p>Hi {name}, your verification code is:</p>
+    <div style='font-family:monospace;font-size:36px;letter-spacing:.4em;padding:16px;background:#FFF;border:1px solid #E6E5E0;text-align:center;font-weight:600'>{otp}</div>
+    <p style='color:#5A5955;font-size:13px;margin-top:16px'>This code expires in 10 minutes. If you didn't request this, ignore this email.</p>
+    </div>"""
+    try:
+        await asyncio.to_thread(resend.Emails.send, {
+            "from": SENDER_EMAIL, "to": [to_email],
+            "subject": f"Ledger code: {otp}", "html": html,
+        })
+    except Exception as e:
+        logging.error(f"Email send failed: {e}")
+
+
+async def send_whatsapp_reminder(phone: str, message: str):
+    """Stub - Meta WhatsApp Cloud API. Activates when WHATSAPP_ACCESS_TOKEN is set to a real value."""
+    token = os.environ.get("WHATSAPP_ACCESS_TOKEN", "")
+    phone_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
+    if not token or token == "PLACEHOLDER" or not phone_id or phone_id == "PLACEHOLDER":
+        logging.info(f"[WhatsApp STUB] to={phone}: {message}")
+        return
+    try:
+        await asyncio.to_thread(http_requests.post,
+            f"https://graph.facebook.com/v17.0/{phone_id}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"messaging_product": "whatsapp", "to": phone, "type": "text", "text": {"body": message}},
+            timeout=10,
+        )
+    except Exception as e:
+        logging.error(f"WhatsApp send failed: {e}")
+
 # ---------------------- Models ----------------------
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -61,7 +103,25 @@ class User(BaseModel):
     has_password: bool = False
     has_google: bool = False
     preferred_currency: str = "INR"
+    theme: Literal["light", "dark"] = "light"
+    whatsapp_number: Optional[str] = None
+    whatsapp_enabled: bool = False
+    disabled: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class OTPVerifyPayload(BaseModel):
+    email: str
+    otp: str
+
+
+class ThemePayload(BaseModel):
+    theme: Literal["light", "dark"]
+
+
+class WhatsAppPayload(BaseModel):
+    whatsapp_number: Optional[str] = None
+    whatsapp_enabled: bool = False
 
 
 class RegisterPayload(BaseModel):
@@ -85,6 +145,10 @@ class UserPublic(BaseModel):
     has_password: bool = False
     has_google: bool = False
     preferred_currency: str
+    theme: str = "light"
+    whatsapp_number: Optional[str] = None
+    whatsapp_enabled: bool = False
+    disabled: bool = False
     mfa_verified: bool = True
 
 
@@ -300,7 +364,7 @@ def _user_response(user_doc: dict, mfa_verified: bool) -> dict:
 
 
 @api_router.post("/auth/register")
-async def auth_register(payload: RegisterPayload, response: Response):
+async def auth_register(payload: RegisterPayload):
     email = payload.email.strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Invalid email")
@@ -309,13 +373,44 @@ async def auth_register(payload: RegisterPayload, response: Response):
     if len(payload.name.strip()) < 1:
         raise HTTPException(status_code=400, detail="Name required")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
-    if existing:
-        if existing.get("password_hash"):
-            raise HTTPException(status_code=409, detail="Email already registered. Please sign in.")
-        # Link password to existing Google account
+    if existing and existing.get("password_hash"):
+        raise HTTPException(status_code=409, detail="Email already registered. Please sign in.")
+    otp = f"{py_secrets.randbelow(900000) + 100000}"
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    await db.pending_registrations.delete_many({"email": email})
+    await db.pending_registrations.insert_one({
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "name": payload.name.strip(),
+        "otp": otp,
+        "link_to_existing": bool(existing),  # link password to Google account
+        "expires_at": expires_at,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await send_otp_email(email, otp, payload.name.strip())
+    return {"ok": True, "email": email, "message": "OTP sent to email"}
+
+
+@api_router.post("/auth/verify-otp")
+async def auth_verify_otp(payload: OTPVerifyPayload, response: Response):
+    email = payload.email.strip().lower()
+    pending = await db.pending_registrations.find_one({"email": email}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=400, detail="No pending registration. Please sign up again.")
+    expires_at = datetime.fromisoformat(pending["expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expires_at:
+        await db.pending_registrations.delete_one({"email": email})
+        raise HTTPException(status_code=400, detail="OTP expired. Please sign up again.")
+    if pending["otp"] != payload.otp.strip():
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    # Create or link account
+    if pending.get("link_to_existing"):
+        existing = await db.users.find_one({"email": email}, {"_id": 0})
         await db.users.update_one(
             {"user_id": existing["user_id"]},
-            {"$set": {"password_hash": hash_password(payload.password), "has_password": True}}
+            {"$set": {"password_hash": pending["password_hash"], "has_password": True}}
         )
         user_doc = await db.users.find_one({"user_id": existing["user_id"]}, {"_id": 0})
     else:
@@ -323,23 +418,32 @@ async def auth_register(payload: RegisterPayload, response: Response):
         role = "owner" if total == 0 else "editor"
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         user_doc = {
-            "user_id": user_id,
-            "email": email,
-            "name": payload.name.strip(),
-            "picture": None,
-            "role": role,
-            "mfa_enabled": False,
-            "mfa_secret": None,
-            "password_hash": hash_password(payload.password),
-            "has_password": True,
-            "has_google": False,
-            "preferred_currency": "INR",
+            "user_id": user_id, "email": email, "name": pending["name"],
+            "picture": None, "role": role, "mfa_enabled": False, "mfa_secret": None,
+            "password_hash": pending["password_hash"], "has_password": True, "has_google": False,
+            "preferred_currency": "INR", "theme": "light", "whatsapp_number": None,
+            "whatsapp_enabled": False, "disabled": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(user_doc)
         await _seed_default_categories(user_id)
+    await db.pending_registrations.delete_one({"email": email})
     await _issue_session(user_doc, response)
     return _user_response(user_doc, mfa_verified=not user_doc.get("mfa_enabled", False))
+
+
+@api_router.post("/auth/resend-otp")
+async def auth_resend_otp(payload: dict):
+    email = (payload.get("email") or "").strip().lower()
+    pending = await db.pending_registrations.find_one({"email": email}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=404, detail="No pending registration")
+    otp = f"{py_secrets.randbelow(900000) + 100000}"
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    await db.pending_registrations.update_one({"email": email},
+        {"$set": {"otp": otp, "expires_at": expires_at}})
+    await send_otp_email(email, otp, pending["name"])
+    return {"ok": True}
 
 
 @api_router.post("/auth/login")
@@ -359,6 +463,9 @@ async def auth_login(payload: LoginPayload, request: Request, response: Response
         # lockout expired - reset
         await db.login_attempts.delete_one({"identifier": identifier})
     user_doc = await db.users.find_one({"email": email}, {"_id": 0})
+    user_doc = await db.users.find_one({"email": email}, {"_id": 0})
+    if user_doc and user_doc.get("disabled"):
+        raise HTTPException(status_code=403, detail="Account disabled. Contact your administrator.")
     if not user_doc or not user_doc.get("password_hash") or not verify_password(payload.password, user_doc["password_hash"]):
         # increment failures
         new_count = (attempt.get("count", 0) + 1) if attempt else 1
@@ -470,6 +577,10 @@ async def auth_me(user=Depends(require_user_pre_mfa)):
         has_password=bool(user.get("password_hash")),
         has_google=bool(user.get("has_google")),
         preferred_currency=user.get("preferred_currency", "INR"),
+        theme=user.get("theme", "light"),
+        whatsapp_number=user.get("whatsapp_number"),
+        whatsapp_enabled=user.get("whatsapp_enabled", False),
+        disabled=user.get("disabled", False),
         mfa_verified=user.get("mfa_verified", True),
     )
 
@@ -569,6 +680,49 @@ async def update_role(target_user_id: str, payload: RoleUpdate, user=Depends(req
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     return {"ok": True}
+
+
+@api_router.put("/users/{target_user_id}/disable")
+async def disable_user(target_user_id: str, body: dict, user=Depends(require_role(["owner"]))):
+    if target_user_id == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Cannot disable yourself")
+    disabled = bool(body.get("disabled", True))
+    res = await db.users.update_one({"user_id": target_user_id}, {"$set": {"disabled": disabled}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    # invalidate sessions
+    if disabled:
+        await db.user_sessions.delete_many({"user_id": target_user_id})
+    return {"ok": True, "disabled": disabled}
+
+
+@api_router.delete("/users/{target_user_id}")
+async def delete_user_hard(target_user_id: str, user=Depends(require_role(["owner"]))):
+    if target_user_id == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    # purge all related data
+    await db.user_sessions.delete_many({"user_id": target_user_id})
+    await db.accounts.delete_many({"user_id": target_user_id})
+    await db.transactions.delete_many({"user_id": target_user_id})
+    await db.categories.delete_many({"user_id": target_user_id})
+    await db.budgets.delete_many({"user_id": target_user_id})
+    res = await db.users.delete_one({"user_id": target_user_id})
+    return {"ok": True, "deleted": res.deleted_count}
+
+
+@api_router.put("/me/theme")
+async def update_theme(payload: ThemePayload, user=Depends(require_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"theme": payload.theme}})
+    return {"ok": True, "theme": payload.theme}
+
+
+@api_router.put("/me/whatsapp")
+async def update_whatsapp(payload: WhatsAppPayload, user=Depends(require_user)):
+    update = {"whatsapp_enabled": payload.whatsapp_enabled}
+    if payload.whatsapp_number is not None:
+        update["whatsapp_number"] = payload.whatsapp_number.strip() or None
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    return {"ok": True, **update}
 
 
 # ---------------------- Accounts ----------------------
@@ -948,4 +1102,47 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    scheduler.shutdown(wait=False)
     client.close()
+
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+scheduler = AsyncIOScheduler()
+
+
+async def whatsapp_reminder_job():
+    """Hourly: send WhatsApp reminder to users 24h before recurring payment due date."""
+    try:
+        users = await db.users.find({"whatsapp_enabled": True, "whatsapp_number": {"$ne": None}}, {"_id": 0}).to_list(1000)
+        now = datetime.now(timezone.utc)
+        for u in users:
+            txns = await db.transactions.find(
+                {"user_id": u["user_id"], "is_recurrent": True, "type": "expense"}, {"_id": 0}
+            ).to_list(1000)
+            for t in txns:
+                period = t.get("recurrence_period") or "monthly"
+                try:
+                    last = datetime.fromisoformat(t["date"])
+                except Exception:
+                    continue
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                if period == "weekly":
+                    nxt = last + timedelta(weeks=1)
+                elif period == "yearly":
+                    nxt = last + timedelta(days=365)
+                else:
+                    nxt = last + timedelta(days=30)
+                delta_hours = (nxt - now).total_seconds() / 3600
+                if 23 <= delta_hours <= 25:
+                    msg = f"Reminder: {t['name']} ({t['billed_amount']} {t.get('currency','INR')}) is due tomorrow."
+                    await send_whatsapp_reminder(u["whatsapp_number"], msg)
+    except Exception as e:
+        logging.error(f"whatsapp_reminder_job error: {e}")
+
+
+@app.on_event("startup")
+async def start_scheduler():
+    scheduler.add_job(whatsapp_reminder_job, "interval", hours=1, id="whatsapp_reminders", replace_existing=True)
+    scheduler.start()

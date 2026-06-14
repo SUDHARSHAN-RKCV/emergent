@@ -21,6 +21,23 @@
     --recurrent-bg: #F9F0E1;
 }
 
+[data-theme="dark"] {
+    --bg: #161613;
+    --surface: #1F1F1B;
+    --text: #F0EFE8;
+    --text-secondary: #9A9892;
+    --border: #2E2E29;
+    --primary: #C9B27A;
+    --primary-foreground: #161613;
+    --primary-hover: #B89E62;
+    --income: #7FB269;
+    --income-bg: #1F2A1C;
+    --expense: #E07B58;
+    --expense-bg: #2E1F1A;
+    --recurrent: #D4A856;
+    --recurrent-bg: #2A2317;
+}
+
 @layer base {
     :root {
         --background: 47 22% 95%;
