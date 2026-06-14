@@ -16,6 +16,8 @@ from collections import defaultdict
 import pyotp
 import qrcode
 import requests as http_requests
+import bcrypt
+import secrets as py_secrets
 
 
 ROOT_DIR = Path(__file__).parent
@@ -30,6 +32,21 @@ api_router = APIRouter(prefix="/api")
 
 EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
+# ---------------------- Password helpers ----------------------
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+
 # ---------------------- Models ----------------------
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -40,8 +57,22 @@ class User(BaseModel):
     role: Literal["owner", "editor", "viewer"] = "editor"
     mfa_enabled: bool = False
     mfa_secret: Optional[str] = None
+    password_hash: Optional[str] = None
+    has_password: bool = False
+    has_google: bool = False
     preferred_currency: str = "INR"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RegisterPayload(BaseModel):
+    email: str
+    password: str
+    name: str
+
+
+class LoginPayload(BaseModel):
+    email: str
+    password: str
 
 
 class UserPublic(BaseModel):
@@ -51,6 +82,8 @@ class UserPublic(BaseModel):
     picture: Optional[str] = None
     role: str
     mfa_enabled: bool
+    has_password: bool = False
+    has_google: bool = False
     preferred_currency: str
     mfa_verified: bool = True
 
@@ -211,6 +244,137 @@ def require_role(roles: List[str]):
 
 
 # ---------------------- Auth Routes ----------------------
+async def _seed_default_categories(user_id: str):
+    default_cats = [
+        ("Groceries", "expense", "#2D5A27"),
+        ("Rent", "expense", "#9B3922"),
+        ("Utilities", "expense", "#C28A2B"),
+        ("Transport", "expense", "#1C1C1A"),
+        ("Dining", "expense", "#6E6D68"),
+        ("Salary", "income", "#2D5A27"),
+        ("Freelance", "income", "#2C3E2D"),
+    ]
+    for n, k, c in default_cats:
+        await db.categories.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "name": n,
+            "kind": k,
+            "color": c,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+async def _issue_session(user_doc: dict, response: Response) -> str:
+    session_token = py_secrets.token_urlsafe(48)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    mfa_verified = not user_doc.get("mfa_enabled", False)
+    await db.user_sessions.insert_one({
+        "user_id": user_doc["user_id"],
+        "session_token": session_token,
+        "mfa_verified": mfa_verified,
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    response.set_cookie(
+        key="session_token", value=session_token,
+        httponly=True, secure=True, samesite="none", path="/",
+        max_age=7 * 24 * 60 * 60,
+    )
+    return session_token
+
+
+def _user_response(user_doc: dict, mfa_verified: bool) -> dict:
+    return {
+        "user_id": user_doc["user_id"],
+        "email": user_doc["email"],
+        "name": user_doc["name"],
+        "picture": user_doc.get("picture"),
+        "role": user_doc["role"],
+        "mfa_enabled": user_doc.get("mfa_enabled", False),
+        "has_password": bool(user_doc.get("password_hash")),
+        "has_google": bool(user_doc.get("has_google")),
+        "mfa_verified": mfa_verified,
+        "preferred_currency": user_doc.get("preferred_currency", "INR"),
+    }
+
+
+@api_router.post("/auth/register")
+async def auth_register(payload: RegisterPayload, response: Response):
+    email = payload.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if len(payload.name.strip()) < 1:
+        raise HTTPException(status_code=400, detail="Name required")
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        if existing.get("password_hash"):
+            raise HTTPException(status_code=409, detail="Email already registered. Please sign in.")
+        # Link password to existing Google account
+        await db.users.update_one(
+            {"user_id": existing["user_id"]},
+            {"$set": {"password_hash": hash_password(payload.password), "has_password": True}}
+        )
+        user_doc = await db.users.find_one({"user_id": existing["user_id"]}, {"_id": 0})
+    else:
+        total = await db.users.count_documents({})
+        role = "owner" if total == 0 else "editor"
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        user_doc = {
+            "user_id": user_id,
+            "email": email,
+            "name": payload.name.strip(),
+            "picture": None,
+            "role": role,
+            "mfa_enabled": False,
+            "mfa_secret": None,
+            "password_hash": hash_password(payload.password),
+            "has_password": True,
+            "has_google": False,
+            "preferred_currency": "INR",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.users.insert_one(user_doc)
+        await _seed_default_categories(user_id)
+    await _issue_session(user_doc, response)
+    return _user_response(user_doc, mfa_verified=not user_doc.get("mfa_enabled", False))
+
+
+@api_router.post("/auth/login")
+async def auth_login(payload: LoginPayload, request: Request, response: Response):
+    email = payload.email.strip().lower()
+    ip = request.client.host if request.client else "unknown"
+    identifier = f"{ip}:{email}"
+    # Brute force check
+    attempt = await db.login_attempts.find_one({"identifier": identifier}, {"_id": 0})
+    now = datetime.now(timezone.utc)
+    if attempt and attempt.get("count", 0) >= MAX_FAILED_ATTEMPTS:
+        locked_until = datetime.fromisoformat(attempt["locked_until"])
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        if now < locked_until:
+            raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
+        # lockout expired - reset
+        await db.login_attempts.delete_one({"identifier": identifier})
+    user_doc = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user_doc or not user_doc.get("password_hash") or not verify_password(payload.password, user_doc["password_hash"]):
+        # increment failures
+        new_count = (attempt.get("count", 0) + 1) if attempt else 1
+        locked_until = (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat() if new_count >= MAX_FAILED_ATTEMPTS else None
+        await db.login_attempts.update_one(
+            {"identifier": identifier},
+            {"$set": {"identifier": identifier, "count": new_count, "locked_until": locked_until, "updated_at": now.isoformat()}},
+            upsert=True,
+        )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    # success - clear failures
+    await db.login_attempts.delete_one({"identifier": identifier})
+    await _issue_session(user_doc, response)
+    return _user_response(user_doc, mfa_verified=not user_doc.get("mfa_enabled", False))
+
+
 @api_router.post("/auth/session")
 async def auth_session(request: Request, response: Response):
     body = await request.json()
@@ -235,7 +399,8 @@ async def auth_session(request: Request, response: Response):
         await db.users.update_one(
             {"user_id": user_id},
             {"$set": {"name": data.get("name", existing["name"]),
-                       "picture": data.get("picture", existing.get("picture"))}}
+                       "picture": data.get("picture", existing.get("picture")),
+                       "has_google": True}}
         )
         user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     else:
@@ -251,29 +416,14 @@ async def auth_session(request: Request, response: Response):
             "role": role,
             "mfa_enabled": False,
             "mfa_secret": None,
+            "password_hash": None,
+            "has_password": False,
+            "has_google": True,
             "preferred_currency": "INR",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(user_doc)
-        # Seed default categories
-        default_cats = [
-            ("Groceries", "expense", "#2D5A27"),
-            ("Rent", "expense", "#9B3922"),
-            ("Utilities", "expense", "#C28A2B"),
-            ("Transport", "expense", "#1C1C1A"),
-            ("Dining", "expense", "#6E6D68"),
-            ("Salary", "income", "#2D5A27"),
-            ("Freelance", "income", "#2C3E2D"),
-        ]
-        for n, k, c in default_cats:
-            await db.categories.insert_one({
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "name": n,
-                "kind": k,
-                "color": c,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            })
+        await _seed_default_categories(user_id)
 
     session_token = data["session_token"]
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
@@ -317,6 +467,8 @@ async def auth_me(user=Depends(require_user_pre_mfa)):
         picture=user.get("picture"),
         role=user["role"],
         mfa_enabled=user.get("mfa_enabled", False),
+        has_password=bool(user.get("password_hash")),
+        has_google=bool(user.get("has_google")),
         preferred_currency=user.get("preferred_currency", "INR"),
         mfa_verified=user.get("mfa_verified", True),
     )
