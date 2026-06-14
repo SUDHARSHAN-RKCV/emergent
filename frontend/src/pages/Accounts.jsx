@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import api, { formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import PageHeader from "@/components/PageHeader";
@@ -18,11 +18,11 @@ export default function Accounts() {
   const [open, setOpen] = useState(false);
   const canEdit = user?.role === "owner" || user?.role === "editor";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const res = await api.get("/accounts");
     setAccounts(res.data);
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this account?")) return;

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import api, { formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import PageHeader from "@/components/PageHeader";
@@ -22,7 +22,7 @@ export default function Transactions() {
   const canEdit = user?.role === "owner" || user?.role === "editor";
   const currency = user?.preferred_currency || "INR";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const params = new URLSearchParams();
     if (filterType) params.append("type", filterType);
     if (filterAccount) params.append("account_id", filterAccount);
@@ -37,9 +37,9 @@ export default function Transactions() {
     setTxns(t.data);
     setAccounts(a.data);
     setCategories(c.data);
-  };
+  }, [filterType, filterAccount, filterCategory, filterRecurrent, searchQ]);
 
-  useEffect(() => { load(); }, [filterType, filterAccount, filterCategory, filterRecurrent, searchQ]);
+  useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this transaction?")) return;

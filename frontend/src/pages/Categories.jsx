@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import PageHeader from "@/components/PageHeader";
@@ -15,11 +15,11 @@ export default function Categories() {
   const [color, setColor] = useState(COLORS[0]);
   const canEdit = user?.role === "owner" || user?.role === "editor";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const res = await api.get("/categories");
     setCats(res.data);
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const add = async (e) => {
     e.preventDefault();

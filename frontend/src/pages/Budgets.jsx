@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import api, { formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import PageHeader from "@/components/PageHeader";
@@ -14,12 +14,12 @@ export default function Budgets() {
   const canEdit = user?.role === "owner" || user?.role === "editor";
   const currency = user?.preferred_currency || "INR";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [b, c] = await Promise.all([api.get("/budgets"), api.get("/categories")]);
     setBudgets(b.data);
     setCategories(c.data.filter((x) => x.kind === "expense"));
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const add = async (e) => {
     e.preventDefault();

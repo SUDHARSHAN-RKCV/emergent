@@ -93,7 +93,7 @@ export default function Analytics() {
               <ResponsiveContainer>
                 <PieChart>
                   <Pie data={breakdown} dataKey="total" nameKey="category" cx="50%" cy="50%" outerRadius={100} stroke="#F4F3EF">
-                    {breakdown.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                    {breakdown.map((entry, i) => <Cell key={entry.category} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                   </Pie>
                   <Tooltip contentStyle={{ background: "#1C1C1A", color: "#fff", border: "none", borderRadius: 0, fontFamily: "IBM Plex Mono", fontSize: 12 }} formatter={(v) => formatMoney(v, currency)} />
                   <Legend wrapperStyle={{ fontFamily: "Manrope", fontSize: 11 }} />

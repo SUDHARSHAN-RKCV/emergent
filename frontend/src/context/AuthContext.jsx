@@ -31,7 +31,9 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       await api.post("/auth/logout");
-    } catch {}
+    } catch (err) {
+      console.error("Logout error (ignored):", err);
+    }
     setUser(null);
   };
 

@@ -32,7 +32,9 @@ export default function AuthCallback() {
           navigate("/dashboard", { replace: true });
         }
       } catch (e) {
-        console.error("Auth failed:", e);
+        if (process.env.NODE_ENV !== "production") {
+          console.error("Auth failed:", e);
+        }
         navigate("/login", { replace: true });
       }
     })();
