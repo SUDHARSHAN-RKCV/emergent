@@ -446,6 +446,77 @@ async def auth_resend_otp(payload: dict):
     return {"ok": True}
 
 
+@api_router.post("/auth/forgot-password")
+async def auth_forgot_password(payload: dict):
+    email = (payload.get("email") or "").strip().lower()
+    user_doc = await db.users.find_one({"email": email}, {"_id": 0})
+    # Always return ok to avoid email enumeration
+    if user_doc and user_doc.get("password_hash"):
+        token = py_secrets.token_urlsafe(32)
+        expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        await db.password_reset_tokens.insert_one({
+            "token": token, "user_id": user_doc["user_id"], "email": email,
+            "expires_at": expires, "used": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        # Frontend reset URL — derived from request origin via env or fallback
+        base = os.environ.get("FRONTEND_URL", "").rstrip("/")
+        link = f"{base}/reset-password?token={token}" if base else f"/reset-password?token={token}"
+        html = f"""<div style='font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#F4F3EF;color:#1C1C1A'>
+        <h2 style='font-weight:900;margin:0 0 16px'>Reset your Ledger password</h2>
+        <p>Hi {user_doc.get('name','there')}, click the link below to set a new password. It expires in 1 hour.</p>
+        <p><a href='{link}' style='display:inline-block;padding:12px 20px;background:#2C3E2D;color:#F4F3EF;text-decoration:none;font-weight:600'>Reset password</a></p>
+        <p style='color:#5A5955;font-size:13px;word-break:break-all'>{link}</p>
+        <p style='color:#5A5955;font-size:12px;margin-top:24px'>If you didn't request this, ignore this email.</p>
+        </div>"""
+        try:
+            if resend.api_key:
+                await asyncio.to_thread(resend.Emails.send,
+                    {"from": SENDER_EMAIL, "to": [email], "subject": "Reset your Ledger password", "html": html})
+        except Exception as e:
+            logging.error(f"reset email failed: {e}")
+    return {"ok": True, "message": "If an account exists, a reset link has been sent."}
+
+
+@api_router.post("/auth/reset-password")
+async def auth_reset_password(payload: dict):
+    token = (payload.get("token") or "").strip()
+    new_password = payload.get("new_password") or ""
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    rec = await db.password_reset_tokens.find_one({"token": token, "used": False}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=400, detail="Invalid or already-used reset token")
+    expires = datetime.fromisoformat(rec["expires_at"])
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expires:
+        raise HTTPException(status_code=400, detail="Reset link expired")
+    await db.users.update_one(
+        {"user_id": rec["user_id"]},
+        {"$set": {"password_hash": hash_password(new_password), "has_password": True}}
+    )
+    await db.password_reset_tokens.update_one({"token": token}, {"$set": {"used": True}})
+    # invalidate all sessions
+    await db.user_sessions.delete_many({"user_id": rec["user_id"]})
+    return {"ok": True}
+
+
+@api_router.post("/auth/change-password")
+async def auth_change_password(payload: dict, user=Depends(require_user)):
+    current = payload.get("current_password") or ""
+    new_password = payload.get("new_password") or ""
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if not user.get("password_hash") or not verify_password(current, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password incorrect")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password_hash": hash_password(new_password)}}
+    )
+    return {"ok": True}
+
+
 @api_router.post("/auth/login")
 async def auth_login(payload: LoginPayload, request: Request, response: Response):
     email = payload.email.strip().lower()
