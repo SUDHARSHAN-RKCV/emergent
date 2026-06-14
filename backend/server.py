@@ -684,7 +684,13 @@ async def analytics_summary(user=Depends(require_user)):
         ]).to_list(10)
         inc = sum(x["total"] for x in agg if x["_id"] == "income")
         exp = sum(x["total"] for x in agg if x["_id"] == "expense")
-        total_balance += acc.get("opening_balance", 0) + inc - exp
+        tout = sum(x["total"] for x in agg if x["_id"] == "transfer")
+        ti_agg = await db.transactions.aggregate([
+            {"$match": {"user_id": user["user_id"], "type": "transfer", "to_account_id": acc["id"]}},
+            {"$group": {"_id": None, "total": {"$sum": "$billed_amount"}}}
+        ]).to_list(2)
+        tin = ti_agg[0]["total"] if ti_agg else 0
+        total_balance += acc.get("opening_balance", 0) + inc - exp + tin - tout
     # recurring total (monthly normalized)
     rec_txns = await db.transactions.find(
         {"user_id": user["user_id"], "is_recurrent": True, "type": "expense"}, {"_id": 0}
@@ -718,6 +724,8 @@ async def analytics_trends(user=Depends(require_user), months: int = 6):
     ).to_list(5000)
     buckets = defaultdict(lambda: {"income": 0.0, "expense": 0.0})
     for t in txns:
+        if t["type"] not in ("income", "expense"):
+            continue  # ignore transfers in income/expense trends
         key = t["date"][:7]  # YYYY-MM
         buckets[key][t["type"]] += t["billed_amount"]
     series = [{"month": k, "income": v["income"], "expense": v["expense"], "net": v["income"] - v["expense"]}
